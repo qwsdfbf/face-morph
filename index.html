@@ -1,0 +1,816 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Face Morph</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+  :root {
+    --bg: #0e0f12; --panel: #17191e; --line: #2a2d35; --text: #e8e9ec; --mute: #8b8f99; --accent: #6aa8ff; --err: #ff7a7a;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+  body { display: flex; flex-direction: column; align-items: center; gap: 16px; padding-block: 20px 32px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+  header { text-align: center; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: .08em; }
+  header p { margin: 6px 0 0; font-size: 13px; color: var(--mute); }
+  .wrap { width: min(100%, 560px); display: grid; gap: 14px; }
+
+  .uploads { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
+  .drop { position: relative; aspect-ratio: 4 / 5; border: 1.5px dashed #3a3e48; border-radius: 12px; background: var(--panel);
+    display: flex; align-items: center; justify-content: center; text-align: center; cursor: pointer; overflow: hidden;
+    color: var(--mute); font-size: 13px; line-height: 1.6; transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #1b2230; }
+  .drop.filled { border-style: solid; border-color: var(--line); }
+  .drop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  .drop .badge { position: absolute; top: 8px; left: 8px; z-index: 1; padding: 2px 9px; border-radius: 999px; font-size: 12px;
+    background: rgba(0,0,0,.6); color: #fff; }
+  .drop .hint b { display: block; color: var(--text); font-size: 15px; margin-bottom: 2px; }
+  .drop input { display: none; }
+  #swap { padding: 8px 10px; }
+
+  #status { min-height: 20px; font-size: 13px; color: var(--mute); text-align: center; }
+  #status.err { color: var(--err); }
+
+  .stage { position: relative; width: min(100%, calc((100vh - 120px) * 0.8)); justify-self: center; aspect-ratio: 4 / 5; border-radius: 14px;
+    overflow: hidden; background: #000; box-shadow: 0 10px 40px rgba(0,0,0,.5); }
+  canvas { width: 100%; height: 100%; display: block; }
+  .tag { position: absolute; top: 10px; padding: 3px 9px; border-radius: 999px; font-size: 12px;
+    background: rgba(0,0,0,.55); color: #fff; }
+  .tag.a { left: 10px; } .tag.b { right: 10px; }
+  .hidden { display: none !important; }
+
+  .controls { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; display: grid; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  button { appearance: none; border: 1px solid var(--line); background: #22252c; color: var(--text); border-radius: 8px;
+    padding: 7px 14px; font: inherit; font-size: 14px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #3b404b; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #08111f; font-weight: 600; min-width: 92px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); min-width: 120px; }
+  label { font-size: 13px; color: var(--mute); display: flex; align-items: center; gap: 8px; }
+  label.grow { flex: 1; min-width: 200px; }
+  .val { color: var(--text); font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: right; }
+  .jump { display: flex; gap: 8px; margin-left: auto; }
+  #pct { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--mute); min-width: 4.5em; text-align: right; }
+</style>
+</head>
+<body>
+<header>
+  <h1>FACE MORPH</h1>
+  <p>顔写真を2枚選ぶと、自動でモーフィングアニメを作ります（処理はすべてこのブラウザ内）</p>
+</header>
+
+<div class="wrap">
+  <div class="uploads">
+    <label class="drop" id="dropA"><span class="badge">A</span><span class="hint"><b>画像 A</b>クリック or ドロップ</span><input type="file" accept="image/*" id="fileA"></label>
+    <button id="swap" title="AとBを入れ替え" disabled>⇄</button>
+    <label class="drop" id="dropB"><span class="badge">B</span><span class="hint"><b>画像 B</b>クリック or ドロップ</span><input type="file" accept="image/*" id="fileB"></label>
+  </div>
+  <div id="status">顔認識モデルを読み込み中…</div>
+
+  <div class="stage hidden" id="stage">
+    <canvas id="c"></canvas>
+    <span class="tag a" id="tagA">A</span>
+    <span class="tag b" id="tagB">B</span>
+  </div>
+
+  <div class="controls hidden" id="controls">
+    <div class="row">
+      <button class="primary" id="play">一時停止</button>
+      <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="モーフ位置">
+      <span id="pct">A 100%</span>
+    </div>
+    <div class="row">
+      <label class="grow">モーフ時間 <input type="range" id="morph" min="0.5" max="6" step="0.1" value="0.5"><span class="val" id="morphV"></span></label>
+      <label class="grow">静止時間 <input type="range" id="hold" min="0" max="4" step="0.1" value="0"><span class="val" id="holdV"></span></label>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="mesh"> メッシュ表示</label>
+      <label><input type="checkbox" id="pts"> 対応点表示</label>
+      <span class="jump"><button id="toA">A</button><button id="toB">B</button></span>
+    </div>
+    <div class="row">
+      <button id="rec">動画を保存（1ループ）</button>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { FilesetResolver, FaceLandmarker, ImageSegmenter } from 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs';
+import Delaunator from 'https://cdn.jsdelivr.net/npm/delaunator@5.0.1/+esm';
+
+const WASM = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm';
+const FACE_MODEL = 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+const SEG_MODEL = 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/latest/selfie_multiclass_256x256.tflite';
+// The same files bundled next to the page (used when published, where only same-site fetches are allowed).
+// Model files are stored as base64 text, and the segmentation model is split in two to stay under the per-file cap.
+const LOCAL = { wasm: 'assets/vision_wasm_internal.wasm', face: ['assets/face_landmarker.b64.txt'], seg: ['assets/seg_a.b64.txt', 'assets/seg_b.b64.txt'] };
+const W = 720, H = 900;          // output frame (4:5)
+const MAX_SIDE = 1280;           // input photos are downscaled to this
+// segmentation classes: 0 background, 1 hair, 2 body skin, 3 face skin, 4 clothes, 5 accessories
+
+const $ = id => document.getElementById(id);
+const statusEl = $('status');
+function setStatus(msg, err = false) { statusEl.textContent = msg; statusEl.classList.toggle('err', err); }
+
+// ---------------------------------------------------------------- models
+let modelsPromise = null;
+function models() {
+  if (!modelsPromise) modelsPromise = (async () => {
+    const local = await bundled();
+    const fs = local
+      ? { wasmLoaderPath: `${WASM}/vision_wasm_internal.js`, wasmBinaryPath: new URL(LOCAL.wasm, document.baseURI).href }
+      : await FilesetResolver.forVisionTasks(WASM);
+    const asset = async (parts, url) => local ? { modelAssetBuffer: await joinParts(parts) } : { modelAssetPath: url };
+    const face = await FaceLandmarker.createFromOptions(fs, {
+      baseOptions: { ...await asset(LOCAL.face, FACE_MODEL), delegate: 'CPU' }, runningMode: 'IMAGE', numFaces: 1 });
+    const seg = await ImageSegmenter.createFromOptions(fs, {
+      baseOptions: { ...await asset(LOCAL.seg, SEG_MODEL), delegate: 'CPU' }, runningMode: 'IMAGE',
+      outputCategoryMask: true, outputConfidenceMasks: false });
+    return { face, seg };
+  })();
+  return modelsPromise;
+}
+
+const fetched = new Map();
+async function grab(p) {
+  if (!fetched.has(p)) fetched.set(p, fetch(p).then(r => { if (!r.ok) throw new Error(p); return r.text(); }).then(t => {
+    const bin = atob(t.trim()), u = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i);
+    return u;
+  }));
+  return fetched.get(p);
+}
+async function bundled() {
+  try { await grab(LOCAL.face[0]); return true; } catch { return false; }
+}
+async function joinParts(parts) {
+  const bufs = await Promise.all(parts.map(grab));
+  if (bufs.length === 1) return bufs[0];
+  const out = new Uint8Array(bufs.reduce((n, b) => n + b.length, 0));
+  let o = 0; for (const b of bufs) { out.set(b, o); o += b.length; }
+  return out;
+}
+
+async function loadPhoto(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const k = Math.min(1, MAX_SIDE / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement('canvas');
+  cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+  const ctx = cv.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
+  bmp.close();
+  return cv;
+}
+
+async function analyze(cv, name) {
+  const { face, seg } = await models();
+  const r = face.detect(cv);
+  if (!r.faceLandmarks.length) throw new Error(`画像 ${name} から顔が見つかりませんでした`);
+  const lm = r.faceLandmarks[0].map(p => [p.x * cv.width, p.y * cv.height]);
+  const s = seg.segment(cv);
+  const m = s.categoryMask;
+  const cat = m.getAsUint8Array().slice();
+  const mw = m.width, mh = m.height;
+  s.close();
+  return { img: cv, w: cv.width, h: cv.height, lm, cat, mw, mh };
+}
+
+// ---------------------------------------------------------------- geometry
+// similarity transform [a, b, tx, ty]:  x' = a x - b y + tx,  y' = b x + a y + ty
+function sim(src, dst) {
+  let sx = 0, sy = 0, dx = 0, dy = 0;
+  for (let i = 0; i < src.length; i++) { sx += src[i][0]; sy += src[i][1]; dx += dst[i][0]; dy += dst[i][1]; }
+  const n = src.length; sx /= n; sy /= n; dx /= n; dy /= n;
+  let num1 = 0, num2 = 0, den = 0;
+  for (let i = 0; i < n; i++) {
+    const px = src[i][0] - sx, py = src[i][1] - sy, qx = dst[i][0] - dx, qy = dst[i][1] - dy;
+    num1 += px * qx + py * qy; num2 += px * qy - py * qx; den += px * px + py * py;
+  }
+  const a = num1 / den, b = num2 / den;
+  return [a, b, dx - (a * sx - b * sy), dy - (b * sx + a * sy)];
+}
+const ap = (M, p) => [M[0] * p[0] - M[1] * p[1] + M[2], M[1] * p[0] + M[0] * p[1] + M[3]];
+function inv(M) {
+  const [a, b, tx, ty] = M, d = a * a + b * b, ia = a / d, ib = -b / d;
+  return [ia, ib, -(ia * tx - ib * ty), -(ib * tx + ia * ty)];
+}
+const dist = (p, q) => Math.hypot(p[0] - q[0], p[1] - q[1]);
+const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+function convexHull(pts) {
+  const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const lo = [], up = [];
+  for (const q of p) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); }
+  for (let i = p.length - 1; i >= 0; i--) { const q = p[i]; while (up.length >= 2 && cross(up[up.length - 2], up[up.length - 1], q) <= 0) up.pop(); up.push(q); }
+  return lo.slice(0, -1).concat(up.slice(0, -1));
+}
+
+// ---------------------------------------------------------------- binary masks (Uint8Array 0/1, W x H)
+function largest(m, w, h) {
+  const lab = new Int32Array(w * h), stack = new Int32Array(w * h);
+  let cur = 0, best = 0, bestN = 0;
+  for (let i = 0; i < w * h; i++) {
+    if (!m[i] || lab[i]) continue;
+    cur++; let sp = 0, n = 0; stack[sp++] = i; lab[i] = cur;
+    while (sp) {
+      const p = stack[--sp]; n++;
+      const x = p % w, y = (p - x) / w;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        const q = ny * w + nx;
+        if (m[q] && !lab[q]) { lab[q] = cur; stack[sp++] = q; }
+      }
+    }
+    if (n > bestN) { bestN = n; best = cur; }
+  }
+  const out = new Uint8Array(w * h);
+  if (best) for (let i = 0; i < w * h; i++) out[i] = lab[i] === best ? 1 : 0;
+  return { mask: out, area: bestN };
+}
+function morph1(m, w, h, r, isMax) {   // separable square max/min filter
+  const tmp = new Uint8Array(w * h), out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let v = isMax ? 0 : 1;
+    for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) {
+      const s = m[y * w + k]; if (isMax ? s : !s) { v = isMax ? 1 : 0; break; }
+    }
+    tmp[y * w + x] = v;
+  }
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    let v = isMax ? 0 : 1;
+    for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) {
+      const s = tmp[k * w + x]; if (isMax ? s : !s) { v = isMax ? 1 : 0; break; }
+    }
+    out[y * w + x] = v;
+  }
+  return out;
+}
+const dilate = (m, r) => morph1(m, W, H, r, true);
+const erode = (m, r) => morph1(m, W, H, r, false);
+const closeM = (m, r) => erode(dilate(m, r), r);
+const openM = (m, r) => dilate(erode(m, r), r);
+const clean = m => closeM(largest(m, W, H).mask, 3);
+function fillConvex(poly) {
+  const m = new Uint8Array(W * H);
+  let x0 = W, x1 = 0, y0 = H, y1 = 0;
+  for (const [x, y] of poly) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+  for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(H - 1, Math.ceil(y1)); y++)
+    for (let x = Math.max(0, Math.floor(x0)); x <= Math.min(W - 1, Math.ceil(x1)); x++) {
+      let inside = true;
+      for (let i = 0; i < poly.length; i++) if (cross(poly[i], poly[(i + 1) % poly.length], [x, y]) < 0) { inside = false; break; }
+      if (inside) m[y * W + x] = 1;
+    }
+  return m;
+}
+// Moore-neighbour boundary trace of a single blob, returns ordered pixel list
+function traceBoundary(m) {
+  let s = -1;
+  for (let i = 0; i < W * H; i++) if (m[i]) { s = i; break; }
+  if (s < 0) return [];
+  const D = [[1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0], [-1, -1], [0, -1], [1, -1]];
+  const at = (x, y) => x >= 0 && y >= 0 && x < W && y < H && m[y * W + x];
+  const dirOf = (dx, dy) => D.findIndex(d => d[0] === dx && d[1] === dy);
+  let x = s % W, y = (s - x) / W, b = 4;
+  const sx = x, sy = y, out = [[x, y]];
+  for (let it = 0; it < W * H; it++) {
+    let moved = false;
+    for (let k = 1; k <= 8; k++) {
+      const d = (b + k) % 8, nx = x + D[d][0], ny = y + D[d][1];
+      if (at(nx, ny)) {
+        const pd = (b + k + 7) % 8, bx = x + D[pd][0], by = y + D[pd][1];
+        x = nx; y = ny; b = dirOf(bx - x, by - y); moved = true; break;
+      }
+    }
+    if (!moved || (x === sx && y === sy)) break;
+    out.push([x, y]);
+  }
+  return out;
+}
+function resample(c, n) {
+  const seg = [0];
+  for (let i = 1; i < c.length; i++) seg.push(seg[i - 1] + dist(c[i], c[i - 1]));
+  const L = seg[seg.length - 1], out = [];
+  for (let k = 0; k < n; k++) {
+    const t = n === 1 ? 0 : L * k / (n - 1);
+    let i = 1; while (i < seg.length - 1 && seg[i] < t) i++;
+    const f = seg[i] === seg[i - 1] ? 0 : (t - seg[i - 1]) / (seg[i] - seg[i - 1]);
+    out.push([c[i - 1][0] + (c[i][0] - c[i - 1][0]) * f, c[i - 1][1] + (c[i][1] - c[i - 1][1]) * f]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- correspondence pipeline
+const LIPS = [[191, 95], [80, 88], [81, 178], [82, 87], [13, 14], [312, 317], [311, 402], [310, 318], [415, 324]];
+const NA = 72;
+const ANG = Array.from({ length: NA }, (_, i) => i * 2 * Math.PI / NA - Math.PI / 2);
+
+function alignedMask(P, M) {
+  // category mask resampled into the output frame (nearest, edges replicated)
+  const iM = inv(M), out = new Uint8Array(W * H);
+  const sx = P.mw / P.w, sy = P.mh / P.h;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const [u, v] = ap(iM, [x + 0.5, y + 0.5]);
+    const mx = Math.min(P.mw - 1, Math.max(0, Math.floor(u * sx))), my = Math.min(P.mh - 1, Math.max(0, Math.floor(v * sy)));
+    out[y * W + x] = P.cat[my * P.mw + mx];
+  }
+  return out;
+}
+
+function profile(sg, L) {
+  const c = [(L[168][0] + L[4][0]) / 2, (L[168][1] + L[4][1]) / 2];
+  const face = clean(sg.map(v => v === 3 ? 1 : 0));
+  const head = clean(sg.map(v => v !== 0 ? 1 : 0));
+  const skin = [], sil = [], edge = [];
+  for (const a of ANG) {
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let r = 0, lastIn = 0, skinEnd = -1, silEnd = 0;
+    for (;; r += 0.5) {
+      const px = c[0] + r * dx, py = c[1] + r * dy;
+      if (!(px >= 0 && px < W - 1 && py >= 0 && py < H - 1)) break;
+      const i = (py | 0) * W + (px | 0);
+      if (skinEnd < 0 && !face[i]) skinEnd = Math.max(r - 0.5, 0);
+      if (head[i]) silEnd = r;
+      lastIn = r;
+    }
+    skin.push(skinEnd < 0 ? lastIn : skinEnd); sil.push(silEnd); edge.push(lastIn);
+  }
+  return { c, skin: smooth(skin), sil: smooth(sil), edge };
+}
+function smooth(r) {
+  const n = r.length, med = [], out = [];
+  for (let i = 0; i < n; i++) {
+    const w = [-2, -1, 0, 1, 2].map(k => r[(i + k + n) % n]).sort((a, b) => a - b); med.push(w[2]);
+  }
+  const g = [-4, -3, -2, -1, 0, 1, 2, 3, 4].map(k => Math.exp(-k * k / 2)), gs = g.reduce((a, b) => a + b);
+  for (let i = 0; i < n; i++) { let s = 0; for (let k = -4; k <= 4; k++) s += med[(i + k + n) % n] * g[k + 4]; out.push(s / gs); }
+  return out;
+}
+function hullRadius(hull, c) {
+  return ANG.map(a => {
+    const d = [Math.cos(a), Math.sin(a)]; let best = 0;
+    for (let i = 0; i < hull.length; i++) {
+      const p = [hull[i][0] - c[0], hull[i][1] - c[1]], q = [hull[(i + 1) % hull.length][0] - c[0], hull[(i + 1) % hull.length][1] - c[1]];
+      const e = [p[0] - q[0], p[1] - q[1]], det = d[0] * e[1] - e[0] * d[1];
+      if (Math.abs(det) < 1e-9) continue;
+      const t = (p[0] * e[1] - e[0] * p[1]) / det, u = (d[0] * p[1] - p[0] * d[1]) / det;
+      if (t > 0 && u >= 0 && u <= 1) best = Math.max(best, t);
+    }
+    return best;
+  });
+}
+function earPoints(sg, L, hullMask, side, n = 8) {
+  const hm = dilate(hullMask, 2), hd = dilate(hullMask, 6);
+  const cx = L[168][0], ytop = Math.min(L[70][1], L[300][1]) - 10, ybot = L[152][1] - 0.25 * (L[152][1] - L[2][1]);
+  const m = new Uint8Array(W * H);
+  for (let y = Math.max(0, Math.ceil(ytop)); y < Math.min(H, Math.floor(ybot)); y++) for (let x = 0; x < W; x++) {
+    if (side < 0 ? x >= cx : x < cx) continue;
+    const i = y * W + x, v = sg[i];
+    if ((v === 3 || v === 2) && !hm[i]) m[i] = 1;
+  }
+  const { mask, area } = largest(m, W, H);
+  if (area < 300) return null;
+  const e = largest(closeM(openM(mask, 2), 4), W, H).mask;
+  const cnt = traceBoundary(e);
+  const rim = cnt.map(([x, y]) => !hd[y * W + x]);
+  if (rim.filter(Boolean).length < 20) return null;
+  const k = rim.every(Boolean) ? 0 : rim.indexOf(false);
+  let run = cnt.slice(k).concat(cnt.slice(0, k)).filter((_, i) => rim[(i + k) % rim.length]);
+  if (run[0][1] > run[run.length - 1][1]) run.reverse();    // top -> bottom
+  // anchor at the top of the ear: junction -> top, then top -> lobe
+  let top = 0; run.forEach((p, i) => { if (p[1] < run[top][1]) top = i; });
+  // always the same number of points, so the two photos' ears pair up one to one
+  if (top < 2) return resample(run, n + 2);
+  return resample(run.slice(0, top + 1), 3).slice(0, -1).concat(resample(run.slice(top), n));
+}
+function neckRows(sg, L, fr) {
+  const body = clean(sg.map(v => v === 2 || v === 3 ? 1 : 0));
+  return fr.map(f => {
+    const y = Math.min(H - 1, Math.round(L[152][1] + f * (H - 1 - L[152][1])));
+    const x = Math.round(L[152][0]);
+    if (x < 0 || x >= W || !body[y * W + x]) return null;
+    let l = x, r = x;
+    while (l > 0 && body[y * W + l - 1]) l--;
+    while (r < W - 1 && body[y * W + r + 1]) r++;
+    return l > 2 && r < W - 3 ? [[l, y], [r, y]] : null;
+  });
+}
+
+// Pick the 4:5 frame (in target-shape units): as large as allowed while staying inside both photos,
+// containing the whole face, and as close as possible to a portrait composition.
+function chooseFrame(T, quads) {
+  const fh = dist(T[10], T[152]);
+  let bx0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+  for (const [x, y] of T) { bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); by1 = Math.max(by1, y); }
+  const bw = bx1 - bx0;
+  const need = { l: bx0 - 0.06 * bw, r: bx1 + 0.06 * bw, t: T[10][1] - 0.3 * fh, b: by1 + 0.05 * fh };
+  const cx = (T[234][0] + T[454][0]) / 2;
+  // a frame edge may poke slightly past a photo (that sliver gets the soft edge fill)
+  const tol = 0.07 * fh;
+  const inside = (q, p) => q.every((a, i) => cross(a, q[(i + 1) % 4], p) / dist(a, q[(i + 1) % 4]) >= -tol);
+  const ok = (x, y, w, h) => quads.every(q => inside(q, [x, y]) && inside(q, [x + w, y]) && inside(q, [x + w, y + h]) && inside(q, [x, y + h]));
+  const ideal = h => [cx - 0.4 * h, T[10][1] - 0.66 * (h - fh)];
+  const hMin = Math.max(need.b - need.t, (need.r - need.l) / 0.8), step = fh * 0.01;
+  for (let h = Math.max(1.9 * fh, hMin); h >= hMin; h -= step) {
+    const w = 0.8 * h, [ix, iy] = ideal(h);
+    let best = null, bd = Infinity;
+    for (let x = need.r - w; x <= need.l; x += 2 * step) for (let y = need.b - h; y <= need.t; y += 2 * step) {
+      const d = (x - ix) ** 2 + (y - iy) ** 2;
+      if (d < bd && ok(x, y, w, h)) { bd = d; best = { x, y, w, h }; }
+    }
+    if (best) return best;
+  }
+  // the photos are cropped too tightly: frame the face anyway, the missing edges get filled
+  const h = Math.max(hMin * 1.1, 1.5 * fh), [ix, iy] = ideal(h);
+  return { x: Math.min(Math.max(ix, need.r - 0.8 * h), need.l), y: Math.min(Math.max(iy, need.b - h), need.t), w: 0.8 * h, h };
+}
+
+function buildMesh(A, B) {
+  // 1. common target shape: average face, made upright, framed in W x H
+  const SB = sim(B.lm, A.lm);
+  let T = A.lm.map((p, i) => { const q = ap(SB, B.lm[i]); return [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2]; });
+  let e1 = T[468], e2 = T[473];
+  if (e2[0] < e1[0]) [e1, e2] = [e2, e1];
+  const th = -Math.atan2(e2[1] - e1[1], e2[0] - e1[0]);
+  T = T.map(([x, y]) => [x * Math.cos(th) - y * Math.sin(th), x * Math.sin(th) + y * Math.cos(th)]);
+  const quads = [A, B].map(P => {
+    const M = sim(P.lm, T);
+    return [[0, 0], [P.w, 0], [P.w, P.h], [0, P.h]].map(p => ap(M, p));
+  });
+  const fr = chooseFrame(T, quads), s = H / fr.h;
+  T = T.map(([x, y]) => [(x - fr.x) * s, (y - fr.y) * s]);
+  const MA = sim(A.lm, T), MB = sim(B.lm, T);
+  const LA = A.lm.map(p => ap(MA, p)), LB = B.lm.map(p => ap(MB, p));
+  // closed mouth: inner lip contours may cross slightly; make them meet instead
+  for (const L of [LA, LB]) for (const [u, l] of LIPS) {
+    if (L[l][1] < L[u][1] + 0.6) {
+      const m = [(L[u][0] + L[l][0]) / 2, (L[u][1] + L[l][1]) / 2];
+      L[u] = [m[0], m[1] - 0.3]; L[l] = [m[0], m[1] + 0.3];
+    }
+  }
+
+  // 2. hair / ears / neck from segmentation, along rays from the nose
+  const sgA = alignedMask(A, MA), sgB = alignedMask(B, MB);
+  const pa = profile(sgA, LA), pb = profile(sgB, LB);
+  const hullA = convexHull(LA), hullB = convexHull(LB);
+  const hA = hullRadius(hullA, pa.c), hB = hullRadius(hullB, pb.c);
+  let exA = [], exB = [], tags = [];
+  const at = (P, i, r) => [P.c[0] + Math.cos(ANG[i]) * r, P.c[1] + Math.sin(ANG[i]) * r];
+  // when the two outlines differ a lot in a direction (long vs short hair), they are not the same
+  // feature: pairing them would only drag the background around, so leave that direction to the dissolve
+  const fh = (dist(LA[10], LA[152]) + dist(LB[10], LB[152])) / 2;
+  for (let i = 0; i < NA; i++) {
+    if (pa.skin[i] > hA[i] + 10 && pb.skin[i] > hB[i] + 10 && Math.abs(pa.skin[i] - pb.skin[i]) < 0.25 * fh) {     // hairline / face-skin edge beyond the mesh
+      exA.push(at(pa, i, pa.skin[i])); exB.push(at(pb, i, pb.skin[i])); tags.push('skin');
+    }
+    const okA = pa.sil[i] < pa.edge[i] - 6 && pa.sil[i] > hA[i] + 10, okB = pb.sil[i] < pb.edge[i] - 6 && pb.sil[i] > hB[i] + 10;
+    if (okA && okB && Math.abs(pa.sil[i] - pb.sil[i]) < 0.3 * fh) {   // head silhouette
+      const inA = Math.max(pa.skin[i], hA[i]), inB = Math.max(pb.skin[i], hB[i]);
+      exA.push(at(pa, i, pa.sil[i])); exB.push(at(pb, i, pb.sil[i])); tags.push('sil');
+      if (pa.sil[i] - inA > 25 && pb.sil[i] - inB > 25) {
+        exA.push(at(pa, i, (inA + pa.sil[i]) / 2)); exB.push(at(pb, i, (inB + pb.sil[i]) / 2)); tags.push('mid');
+      }
+      if (pa.edge[i] - pa.sil[i] > 40 && pb.edge[i] - pb.sil[i] > 40) {
+        exA.push(at(pa, i, (pa.sil[i] + pa.edge[i]) / 2)); exB.push(at(pb, i, (pb.sil[i] + pb.edge[i]) / 2)); tags.push('bg');
+      }
+    }
+  }
+  const hmA = fillConvex(hullA), hmB = fillConvex(hullB);
+  for (const side of [-1, 1]) {
+    const ea = earPoints(sgA, LA, hmA, side), eb = earPoints(sgB, LB, hmB, side);
+    if (!ea || !eb) continue;
+    const near = (p, E) => E.some(q => dist(p, q) < 18);
+    const keep = exA.map((p, i) => !(near(p, ea) || near(exB[i], eb)));
+    exA = exA.filter((_, i) => keep[i]); exB = exB.filter((_, i) => keep[i]); tags = tags.filter((_, i) => keep[i]);
+    exA.push(...ea); exB.push(...eb); tags.push(...ea.map(() => 'ear'));
+  }
+  const na = neckRows(sgA, LA, [0.35, 0.7, 1]), nb = neckRows(sgB, LB, [0.35, 0.7, 1]);
+  na.forEach((a, i) => { const b = nb[i]; if (a && b) for (const j of [0, 1]) { exA.push(a[j]); exB.push(b[j]); tags.push('neck'); } });
+
+  // 3. fixed frame border
+  const border = [];
+  for (let k = 0; k < 9; k++) { const x = k * (W - 1) / 8; border.push([x, 0], [x, H - 1]); }
+  for (let k = 1; k < 10; k++) { const y = k * (H - 1) / 10; border.push([0, y], [W - 1, y]); }
+
+  let PA = [...LA, ...exA, ...border], PB = [...LB, ...exB, ...border];
+  tags = [...LA.map(() => 'lm'), ...tags, ...border.map(() => 'border')];
+
+  // 4. triangulate the average shape; drop helper points until no triangle flips anywhere in the morph
+  const area = (P, a, b, c) => cross(P[a], P[b], P[c]);
+  let tri;
+  for (let it = 0; it < 300; it++) {
+    const mid = PA.map((p, i) => [(p[0] + PB[i][0]) / 2, (p[1] + PB[i][1]) / 2]);
+    const del = Delaunator.from(mid);
+    tri = [];
+    for (let i = 0; i < del.triangles.length; i += 3) {
+      const t = [del.triangles[i], del.triangles[i + 1], del.triangles[i + 2]];
+      if (Math.abs(area(mid, ...t)) > 1e-6) tri.push(t);
+    }
+    const cnt = new Map(); let bad = 0;
+    for (const t of tri) {
+      const sg = Math.sign(area(mid, ...t));
+      let flip = false;
+      for (let k = 0; k <= 20 && !flip; k++) {
+        const u = k / 20, P = t.map(v => [PA[v][0] * (1 - u) + PB[v][0] * u, PA[v][1] * (1 - u) + PB[v][1] * u]);
+        if (cross(P[0], P[1], P[2]) * sg <= 0) flip = true;
+      }
+      if (!flip) continue;
+      bad++;
+      for (const v of t) if (tags[v] !== 'lm' && tags[v] !== 'border') cnt.set(v, (cnt.get(v) || 0) + 1);
+    }
+    if (!bad || !cnt.size || it === 299) break;
+    let worst = -1, wn = 0; for (const [v, n] of cnt) if (n > wn) { wn = n; worst = v; }
+    PA.splice(worst, 1); PB.splice(worst, 1); tags.splice(worst, 1);
+  }
+
+  // texture coordinates: each vertex mapped back into its original photo
+  const iA = inv(MA), iB = inv(MB);
+  const uvA = PA.map(p => { const q = ap(iA, p); return [q[0] / A.w, q[1] / A.h]; });
+  const uvB = PB.map(p => { const q = ap(iB, p); return [q[0] / B.w, q[1] / B.h]; });
+  // per vertex: [how late it cross-dissolves, how much it softens mid-morph]
+  // the face dissolves over the whole morph; hair and background switch mostly in the middle,
+  // and the background goes slightly soft while both photos overlap, so it reads as one blend
+  const WEIGHT = { lm: [0, 0], skin: [0.4, 0], ear: [0.4, 0], neck: [0.4, 0], mid: [0.8, 0], sil: [0.8, 0.4], bg: [1, 1], border: [1, 1] };
+  const wt = tags.map(t => WEIGHT[t]);
+  return { a: PA, b: PB, uvA, uvB, wt, tri, tags, frame: fr, faceH: dist(T[10], T[152]) };
+}
+
+// ---------------------------------------------------------------- renderer (WebGL2)
+const canvas = $('c');
+const gl = canvas.getContext('webgl2', { antialias: true, premultipliedAlpha: false });
+
+function sh(type, src) {
+  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function prog(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, sh(gl.VERTEX_SHADER, vs)); gl.attachShader(p, sh(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+// Each vertex knows its position in both aligned faces and where it sits in each original photo;
+// the shape moves by uShape and the two photos cross-dissolve by uMix.
+const VS = `#version 300 es
+in vec2 aPA; in vec2 aPB; in vec2 aUA; in vec2 aUB; in vec2 aW;
+uniform float uShape; uniform float uMix; uniform vec2 uSize;
+out vec2 vA; out vec2 vB; out float vMix; out float vBlur;
+void main() {
+  vec2 p = mix(aPA, aPB, uShape);
+  vA = aUA; vB = aUB;
+  vMix = mix(uMix, smoothstep(0.2, 0.8, uMix), aW.x);
+  vBlur = aW.y * 4.0 * uMix * (1.0 - uMix);
+  gl_Position = vec4(p.x / uSize.x * 2.0 - 1.0, 1.0 - p.y / uSize.y * 2.0, 0.0, 1.0);
+  gl_PointSize = 5.0;
+}`;
+// Outside the original photo the edge pixels are extended, blurred more the further out they go.
+const FS = `#version 300 es
+precision highp float;
+uniform sampler2D uTexA; uniform sampler2D uTexB; uniform vec2 uDimA; uniform vec2 uDimB;
+in vec2 vA; in vec2 vB; in float vMix; in float vBlur; out vec4 outColor;
+vec4 samp(sampler2D t, vec2 uv, vec2 dim) {
+  vec2 c = clamp(uv, 0.0, 1.0);
+  float d = length((uv - c) * dim);
+  vec4 sharp = texture(t, uv, vBlur * 2.5);
+  vec4 soft = textureLod(t, c, clamp(log2(1.0 + d * 0.35), 0.0, 7.0) + vBlur * 2.5);
+  return d > 0.0 ? soft : sharp;
+}
+void main() { outColor = mix(samp(uTexA, vA, uDimA), samp(uTexB, vB, uDimB), vMix); }`;
+const FS_LINE = `#version 300 es
+precision mediump float; uniform vec4 uColor; out vec4 outColor;
+void main() { outColor = uColor; }`;
+const pMorph = prog(VS, FS), pLine = prog(VS, FS_LINE);
+
+let scene = null;   // { vao, vaoLine, nTri, nLine, nPts, texA, texB, dimA, dimB }
+function texture(img) {
+  const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  return t;
+}
+function makeVao(p, mesh, idx) {
+  const vao = gl.createVertexArray(); gl.bindVertexArray(vao);
+  for (const [name, data] of [['aPA', mesh.a], ['aPB', mesh.b], ['aUA', mesh.uvA], ['aUB', mesh.uvB], ['aW', mesh.wt]]) {
+    const loc = gl.getAttribLocation(p, name); if (loc < 0) continue;
+    const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(data.flat()), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  }
+  const ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+  gl.bindVertexArray(null);
+  return vao;
+}
+function setScene(A, B, mesh) {
+  if (scene) { gl.deleteTexture(scene.texA); gl.deleteTexture(scene.texB); gl.deleteVertexArray(scene.vao); gl.deleteVertexArray(scene.vaoLine); }
+  const edges = new Set(), lines = [];
+  for (const [i, j, k] of mesh.tri) for (const [u, v] of [[i, j], [j, k], [k, i]]) {
+    const key = Math.min(u, v) * 65536 + Math.max(u, v);
+    if (!edges.has(key)) { edges.add(key); lines.push(u, v); }
+  }
+  scene = {
+    texA: texture(A.img), texB: texture(B.img), dimA: [A.w, A.h], dimB: [B.w, B.h],
+    vao: makeVao(pMorph, mesh, mesh.tri.flat()), vaoLine: makeVao(pLine, mesh, lines),
+    nTri: mesh.tri.length * 3, nLine: lines.length, nPts: mesh.a.length,
+  };
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const r = canvas.getBoundingClientRect();
+  // while recording, render at the fixed output size so the video does not depend on the window
+  const w = recording ? W : Math.max(1, Math.round(r.width * dpr)), h = recording ? H : Math.max(1, Math.round(r.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+function draw(t) {
+  if (!scene) return;
+  resize();
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.useProgram(pMorph);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, scene.texA);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, scene.texB);
+  gl.uniform1i(gl.getUniformLocation(pMorph, 'uTexA'), 0);
+  gl.uniform1i(gl.getUniformLocation(pMorph, 'uTexB'), 1);
+  gl.uniform2f(gl.getUniformLocation(pMorph, 'uDimA'), ...scene.dimA);
+  gl.uniform2f(gl.getUniformLocation(pMorph, 'uDimB'), ...scene.dimB);
+  gl.uniform1f(gl.getUniformLocation(pMorph, 'uShape'), t);
+  gl.uniform1f(gl.getUniformLocation(pMorph, 'uMix'), t);
+  gl.uniform2f(gl.getUniformLocation(pMorph, 'uSize'), W, H);
+  gl.bindVertexArray(scene.vao);
+  gl.drawElements(gl.TRIANGLES, scene.nTri, gl.UNSIGNED_SHORT, 0);
+  if (ui.mesh.checked || ui.pts.checked) {
+    gl.useProgram(pLine);
+    gl.uniform1f(gl.getUniformLocation(pLine, 'uShape'), t);
+    gl.uniform2f(gl.getUniformLocation(pLine, 'uSize'), W, H);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.bindVertexArray(scene.vaoLine);
+    if (ui.mesh.checked) {
+      gl.uniform4f(gl.getUniformLocation(pLine, 'uColor'), 0.42, 1.0, 0.6, 0.55);
+      gl.drawElements(gl.LINES, scene.nLine, gl.UNSIGNED_SHORT, 0);
+    }
+    if (ui.pts.checked) {
+      gl.uniform4f(gl.getUniformLocation(pLine, 'uColor'), 1.0, 0.85, 0.3, 0.95);
+      gl.drawArrays(gl.POINTS, 0, scene.nPts);
+    }
+    gl.disable(gl.BLEND);
+  }
+  gl.bindVertexArray(null);
+}
+
+// ---------------------------------------------------------------- player
+const ui = Object.fromEntries(['play', 'scrub', 'pct', 'morph', 'morphV', 'hold', 'holdV', 'mesh', 'pts', 'toA', 'toB', 'tagA', 'tagB', 'rec']
+  .map(id => [id, $(id)]));
+// Timeline: hold A -> morph A->B -> hold B -> morph B->A, looping.
+let playing = true, clock = 0, last = null, current = 0, target = null, recording = false;
+const ease = x => x * x * x * (x * (x * 6 - 15) + 10);   // smootherstep
+const cycle = () => 2 * (+ui.hold.value + +ui.morph.value);
+function at(c) {
+  const h = +ui.hold.value, m = +ui.morph.value;
+  c %= cycle();
+  if (c < h) return 0;
+  if (c < h + m) return ease((c - h) / m);
+  if (c < 2 * h + m) return 1;
+  return 1 - ease((c - 2 * h - m) / m);
+}
+function clockFor(t) {   // where in the loop the value t sits, so playback continues from it
+  const h = +ui.hold.value, m = +ui.morph.value;
+  if (t <= 0) return 0;
+  if (t >= 1) return h + m;
+  let lo = 0, hi = 1;
+  for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; ease(mid) < t ? lo = mid : hi = mid; }
+  return h + lo * m;
+}
+function show(t) {
+  current = t;
+  ui.scrub.value = Math.round(t * 1000);
+  const b = Math.round(t * 100);
+  ui.pct.textContent = t < 0.5 ? `A ${100 - b}%` : `B ${b}%`;
+  ui.tagA.style.opacity = 1 - t * 0.85; ui.tagB.style.opacity = 0.15 + t * 0.85;
+  draw(t);
+}
+function setPlaying(p) { playing = p; ui.play.textContent = p ? '一時停止' : '再生'; if (p) { clock = clockFor(current); last = null; } }
+function frame(now) {
+  const dt = last == null ? 0 : (now - last) / 1000; last = now;
+  if (target != null) {
+    const step = dt / Math.max(+ui.morph.value, 0.1), d = target - current;
+    const nx = Math.abs(d) <= step ? target : current + Math.sign(d) * step;
+    show(nx); if (nx === target) target = null;
+  } else if (playing) { clock += dt; show(at(clock)); }
+  requestAnimationFrame(frame);
+}
+function labels() { ui.morphV.textContent = (+ui.morph.value).toFixed(1) + 's'; ui.holdV.textContent = (+ui.hold.value).toFixed(1) + 's'; }
+ui.play.onclick = () => { target = null; setPlaying(!playing); };
+ui.scrub.oninput = () => { if (recording) return; target = null; setPlaying(false); show(ui.scrub.value / 1000); };
+ui.morph.oninput = ui.hold.oninput = () => { labels(); clock = clockFor(current); };
+ui.mesh.onchange = ui.pts.onchange = () => draw(current);
+ui.toA.onclick = () => { setPlaying(false); target = 0; };
+ui.toB.onclick = () => { setPlaying(false); target = 1; };
+document.addEventListener('keydown', e => {
+  if (e.code === 'Space' && scene && !['BUTTON', 'INPUT'].includes(e.target.tagName)) { e.preventDefault(); target = null; setPlaying(!playing); }
+});
+window.addEventListener('resize', () => draw(current));
+labels();
+requestAnimationFrame(frame);
+
+// Published pages hand files over through the viewer's save prompt; a plain local page uses a download link.
+async function offerFile(blob, filename) {
+  const dl = window.claude?.use ? await window.claude.use('downloads') : null;
+  if (dl) {
+    try { await dl.save({ filename, data: blob }); setStatus('動画を保存しました'); }
+    catch (e) { if (e?.code !== 'declined') setStatus('このページでは動画を保存できませんでした', true); }
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = filename;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+}
+
+ui.rec.onclick = async () => {
+  const mime = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find(m => MediaRecorder.isTypeSupported(m));
+  if (!mime) { setStatus('このブラウザは動画保存に対応していません', true); return; }
+  const rec = new MediaRecorder(canvas.captureStream(60), { mimeType: mime, videoBitsPerSecond: 10e6 });
+  const chunks = []; rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  const done = new Promise(r => rec.onstop = r);
+  recording = true; ui.rec.disabled = true;
+  target = null; current = 0; setPlaying(true); clock = 0; show(0);
+  rec.start();
+  const len = cycle(), t0 = performance.now();
+  const tick = setInterval(() => { ui.rec.textContent = `録画中… ${Math.max(0, len - (performance.now() - t0) / 1000).toFixed(1)}s`; }, 100);
+  await new Promise(r => setTimeout(r, len * 1000 + 100));
+  rec.stop(); await done; clearInterval(tick);
+  recording = false; ui.rec.disabled = false; ui.rec.textContent = '動画を保存（1ループ）';
+  draw(current);
+  await offerFile(new Blob(chunks, { type: mime }), `face-morph.${mime.startsWith('video/mp4') ? 'mp4' : 'webm'}`);
+};
+
+// ---------------------------------------------------------------- uploads
+const photos = { A: null, B: null };
+let job = 0;
+async function rebuild() {
+  $('swap').disabled = !(photos.A || photos.B);
+  if (!photos.A || !photos.B) { setStatus(photos.A || photos.B ? 'もう1枚選んでください' : '顔写真を2枚選んでください'); return; }
+  const my = ++job;
+  try {
+    setStatus('顔を検出しています…');
+    await new Promise(r => setTimeout(r, 30));
+    for (const k of ['A', 'B']) if (!photos[k].data) photos[k].data = await analyze(photos[k].img, k);
+    if (my !== job) return;
+    setStatus('対応点を計算しています…');
+    await new Promise(r => setTimeout(r, 30));
+    const t0 = performance.now();
+    const mesh = buildMesh(photos.A.data, photos.B.data);
+    if (my !== job) return;
+    setScene(photos.A.data, photos.B.data, mesh);
+    $('stage').classList.remove('hidden'); $('controls').classList.remove('hidden');
+    target = null; current = 0; clock = 0; setPlaying(true); show(0);
+    setStatus(`完成（対応点 ${mesh.a.length} 点・三角形 ${mesh.tri.length} 枚・${Math.round(performance.now() - t0)}ms）`);
+    window.__mesh = mesh;
+  } catch (e) {
+    if (my !== job) return;
+    console.error(e); setStatus(e.message || String(e), true);
+    $('stage').classList.add('hidden'); $('controls').classList.add('hidden');
+  }
+}
+async function setPhoto(k, file) {
+  if (!file || !file.type.startsWith('image/') && !/\.(jpe?g|png|webp|gif|bmp|avif|heic)$/i.test(file.name)) return;
+  try {
+    const img = await loadPhoto(file);
+    photos[k] = { img, data: null };
+    showThumb(k);
+    rebuild();
+  } catch (e) { setStatus(`画像 ${k} を読み込めませんでした`, true); }
+}
+function showThumb(k) {
+  const el = $('drop' + k);
+  el.querySelector('img')?.remove();
+  el.classList.toggle('filled', !!photos[k]);
+  el.querySelector('.hint').classList.toggle('hidden', !!photos[k]);
+  if (photos[k]) { const im = new Image(); im.src = photos[k].img.toDataURL('image/jpeg', 0.8); el.appendChild(im); }
+}
+for (const k of ['A', 'B']) {
+  const el = $('drop' + k), input = $('file' + k);
+  input.onchange = () => { setPhoto(k, input.files[0]); input.value = ''; };
+  el.addEventListener('dragover', e => { e.preventDefault(); el.classList.add('over'); });
+  el.addEventListener('dragleave', () => el.classList.remove('over'));
+  el.addEventListener('drop', e => { e.preventDefault(); el.classList.remove('over'); setPhoto(k, e.dataTransfer.files[0]); });
+}
+$('swap').onclick = () => { [photos.A, photos.B] = [photos.B, photos.A]; showThumb('A'); showThumb('B'); rebuild(); };
+
+models().then(() => { if (!photos.A && !photos.B) setStatus('顔写真を2枚選んでください'); })
+  .catch(e => { console.error(e); setStatus('顔認識モデルを読み込めませんでした（ネット接続を確認してください）', true); });
+</script>
+</body>
+</html>
