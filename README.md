@@ -3,7 +3,7 @@
 顔写真を2枚選ぶと、顔のパーツを自動で対応させてモーフィングアニメを作るWebページです。
 画像はブラウザの中だけで処理され、どこにも送信されません。
 
-使う: https://<ユーザー名>.github.io/face-morph/
+使う: https://qwsdfbf.github.io/face-morph/
 
 ## 使っているもの
 
