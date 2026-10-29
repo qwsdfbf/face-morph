@@ -743,7 +743,8 @@ async function encodeFrames(plan) {
   enc.configure(cfg);
   for (let i = 0; i < plan.frames; i++) {
     if (failure) throw failure;
-    draw(at(i / FPS), at(i / FPS));   // the saved video always uses the normal linked morph
+    const s = at(i / FPS);
+    draw(s, ui.shapeOnly.checked ? 0 : s);   // the video follows the "shape only" setting on screen
     const vf = new VideoFrame(canvas, { timestamp: Math.round(i * 1e6 / FPS), duration: Math.round(1e6 / FPS) });
     enc.encode(vf, { keyFrame: i % FPS === 0 }); vf.close();
     while (enc.encodeQueueSize > 6) await tick();
@@ -772,8 +773,7 @@ async function recordRealtime(plan) {
 }
 
 ui.rec.onclick = async () => {
-  const plan = videoPlan(), wasPlaying = playing, wasShapeOnly = ui.shapeOnly.checked;
-  ui.shapeOnly.checked = false;   // the saved video is always the normal change from photo 1 to photo 2
+  const plan = videoPlan(), wasPlaying = playing;
   recording = true; exporting = true; ui.rec.disabled = true;
   let out = null;
   try {
@@ -783,7 +783,7 @@ ui.rec.onclick = async () => {
     console.error(e); setStatus('動画を書き出せませんでした: ' + (e.message || e), true);
   }
   recording = false; exporting = false; ui.rec.disabled = false; ui.rec.textContent = REC_LABEL;
-  ui.shapeOnly.checked = wasShapeOnly; setPlaying(wasPlaying); show(current);
+  setPlaying(wasPlaying); show(current);
   if (out) {
     window.__lastVideo = { bytes: out.blob.size, seconds: plan.dur, ext: out.ext };
     await offerFile(out.blob, `face-morph.${out.ext}`);
