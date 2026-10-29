@@ -56,7 +56,7 @@
   label.grow { flex: 1; min-width: 200px; }
   .val { color: var(--text); font-variant-numeric: tabular-nums; min-width: 3.2em; text-align: right; }
   .jump { display: flex; gap: 8px; margin-left: auto; }
-  #pct { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--mute); min-width: 4.5em; text-align: right; }
+  #pct { font-variant-numeric: tabular-nums; font-size: 13px; color: var(--mute); min-width: 6.8em; text-align: right; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -82,8 +82,8 @@
   <div class="controls hidden" id="controls">
     <div class="row">
       <button class="primary" id="play">一時停止</button>
-      <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="モーフ位置">
-      <span id="pct">A 100%</span>
+      <input type="range" id="scrub" min="0" max="1000" value="0" aria-label="変化後の画像の透明度（100%で完全にモーフした画像）">
+      <span id="pct">変化後 0%</span>
     </div>
     <div class="row">
       <label class="grow">モーフ時間 <input type="range" id="morph" min="0.5" max="6" step="0.1" value="0.5"><span class="val" id="morphV"></span></label>
@@ -92,7 +92,7 @@
     <div class="row">
       <label><input type="checkbox" id="mesh"> メッシュ表示</label>
       <label><input type="checkbox" id="pts"> 対応点表示</label>
-      <span class="jump"><button id="toA">A</button><button id="toB">B</button></span>
+      <span class="jump"><button id="toA" title="変化後の画像の透明度 0%（Aそのまま）">0%</button><button id="toB" title="変化後の画像の透明度 100%（完全にモーフした画像）">100%</button></span>
     </div>
     <div class="row">
       <button id="rec">動画を保存（約10秒・MP4）</button>
@@ -697,7 +697,7 @@ function show(t) {
   current = t;
   ui.scrub.value = Math.round(t * 1000);
   const b = Math.round(t * 100);
-  ui.pct.textContent = t < 0.5 ? `A ${100 - b}%` : `B ${b}%`;
+  ui.pct.textContent = `変化後 ${b}%`;
   ui.tagA.style.opacity = 1 - t * 0.85; ui.tagB.style.opacity = 0.15 + t * 0.85;
   draw(t);
 }
